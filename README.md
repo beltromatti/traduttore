@@ -32,7 +32,7 @@ Follow these steps to get the project up and running on your local machine.
 
 ```bash
 git clone git@github.com:beltromatti/traduttore.git
-cd traduttore/traduttore-app
+cd traduttore
 ```
 
 ### 2. Install Dependencies
@@ -43,7 +43,7 @@ pnpm install
 
 ### 3. Configure Gemini API Key
 
-Create a `.env.local` file in the `traduttore-app` directory and add your Gemini API key:
+Create a `.env.local` file in the `traduttore` directory and add your Gemini API key:
 
 ```
 NEXT_PUBLIC_GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
