@@ -1,6 +1,18 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { NextResponse } from 'next/server';
 
+const GEMINI_MODEL_ID = 'gemini-2.5-flash';
+const LANGUAGE_LABELS = {
+  it: {
+    name: 'Italian',
+    code: 'it',
+  },
+  es: {
+    name: 'Spanish',
+    code: 'es',
+  },
+} satisfies Record<string, { name: string; code: string }>;
+
 export async function POST(request: Request) {
   const { text, sourceLang, targetLang } = await request.json();
 
@@ -8,37 +20,91 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Missing required parameters' }, { status: 400 });
   }
 
-  const apiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY; // Access the API key
+  // Prefer server-side key without the NEXT_PUBLIC prefix; fall back to legacy env name if present.
+  const apiKey = process.env.GEMINI_API_KEY ?? process.env.NEXT_PUBLIC_GEMINI_API_KEY;
 
   if (!apiKey) {
     return NextResponse.json({ error: 'Gemini API key not configured' }, { status: 500 });
   }
 
   const genAI = new GoogleGenerativeAI(apiKey);
-  // Use the appropriate model, checking for 'flash' or similar if '2.5 flash' is a specific variant.
-  // For now, using 'gemini-pro' as a general powerful model. Will adjust if 'flash' is a distinct model ID.
-  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash"});
+  const model = genAI.getGenerativeModel({ model: GEMINI_MODEL_ID });
 
-  const prompt = `Translate the following text from ${sourceLang} to ${targetLang}.\n\nAlso, provide up to two similar idioms or common phrases in the ${targetLang} language that convey a similar meaning or context, if applicable. If no direct idioms are suitable, state "No similar idioms found.".\n\nFinally, provide a brief description (1-2 sentences) of the meaning or context of the translated text/phrase in the ${targetLang} language.\n\nFormat your response as a JSON object with the following keys:\n- \"translation\": The main translated text.\n- \"idioms\": An array of up to two similar idioms (strings), or an empty array if none.\n- \"description\": A brief description of the translated text.\n\nExample for Italian to Spanish:\nInput: \"Ciao mondo!\"
-Output: {\"translation\": \"Hola mundo!\", \"idioms\": [], \"description\": \"A common greeting in Spanish.\"}\n\nInput: "${text}"`;
+  const normalizedSource = typeof sourceLang === 'string' ? sourceLang.toLowerCase() : sourceLang;
+  const normalizedTarget = typeof targetLang === 'string' ? targetLang.toLowerCase() : targetLang;
+
+  const resolveLanguageKey = (
+    value: unknown,
+  ): keyof typeof LANGUAGE_LABELS | undefined => {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+
+    return value in LANGUAGE_LABELS
+      ? (value as keyof typeof LANGUAGE_LABELS)
+      : undefined;
+  };
+
+  const sourceKey = resolveLanguageKey(normalizedSource);
+  const targetKey = resolveLanguageKey(normalizedTarget);
+
+  const sourceLanguageName = sourceKey ? LANGUAGE_LABELS[sourceKey].name : sourceLang;
+  const targetLanguageCode = targetKey ? LANGUAGE_LABELS[targetKey].code : typeof normalizedTarget === 'string' ? normalizedTarget : '';
+  const targetLanguageName = targetKey ? LANGUAGE_LABELS[targetKey].name : targetLang;
+
+  const prompt = `You are an expert translator. Translate the provided text from ${sourceLanguageName} to ${targetLanguageName}.
+
+Return your answer as valid JSON only (no markdown, explanations, or code fences) with exactly the following structure:
+{
+  "translation": "Main translated text as a single string.",
+  "idioms": ["Up to two idioms or phrases conveying a similar meaning in ${targetLanguageName}. Empty array if none."],
+  "description": "One short sentence describing the context or nuances of the translation written in ${targetLanguageName}."
+}
+
+Text to translate (delimited by triple quotes):
+"""
+${text}
+"""`;
 
   try {
     const result = await model.generateContent(prompt);
     const response = await result.response;
-    const textResponse = response.text();
+    const rawText = response.text();
+    const textResponse = rawText.replace(/```json|```/gi, '').trim();
 
-    // Attempt to parse the JSON response from the model
-    let parsedResponse;
-    try {
-      parsedResponse = JSON.parse(textResponse);
-    } catch (jsonError) {
-      console.error("Failed to parse Gemini response as JSON:", textResponse, jsonError);
-      // If parsing fails, try to extract just the translation as a fallback
-      return NextResponse.json({
-        translation: textResponse.split('\n')[0] || textResponse, // Take the first line as translation
-        idioms: [],
-        description: "Could not parse full response, showing raw translation."
-      }, { status: 200 });
+    const jsonMatch = textResponse.match(/\{[\s\S]*\}/);
+    const jsonPayload = jsonMatch ? jsonMatch[0] : textResponse;
+
+    const parsedResponse: {
+      translation: string;
+      idioms: string[];
+      description: string;
+    } = JSON.parse(jsonPayload);
+
+    parsedResponse.translation =
+      typeof parsedResponse.translation === 'string' && parsedResponse.translation.trim()
+        ? parsedResponse.translation.trim()
+        : textResponse.split('\n')[0] || textResponse;
+
+    parsedResponse.idioms = Array.isArray(parsedResponse.idioms)
+      ? parsedResponse.idioms.filter((entry): entry is string => Boolean(entry && entry.trim()))
+      : [];
+
+    const rawDescription =
+      typeof parsedResponse.description === 'string' ? parsedResponse.description.trim() : '';
+
+    if (rawDescription) {
+      try {
+        const descriptionPrompt = `You are a localization assistant. Rewrite the following description so it is in ${targetLanguageName} (${targetLanguageCode}) using natural, idiomatic language. Output plain text only.\n\nDescription:\n"""${rawDescription}"""`;
+        const descriptionResult = await model.generateContent(descriptionPrompt);
+        const descriptionText = descriptionResult.response.text().trim();
+        parsedResponse.description = descriptionText || rawDescription;
+      } catch (descriptionError) {
+        console.error('Failed to localize description:', descriptionError);
+        parsedResponse.description = rawDescription;
+      }
+    } else {
+      parsedResponse.description = '';
     }
 
     return NextResponse.json(parsedResponse, { status: 200 });

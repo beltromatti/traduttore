@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AI Traduttore - Italiano-Spagnolo",
-  description: "Traduttore AI intelligente da e verso italiano-spagnolo, powered by Gemini.",
+  title: "Translator",
+  description: "Minimal Italian ↔ Spanish translator with context-aware nuance.",
 };
 
 export default function RootLayout({
@@ -24,9 +24,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-gray-950 text-gray-50`}
-      >
+      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
         {children}
       </body>
     </html>
